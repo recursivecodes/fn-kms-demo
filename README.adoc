@@ -108,7 +108,7 @@ FROM fnproject/fn-java-fdk:jre11-1.0.98
 WORKDIR /function
 COPY --from=build-stage /function/target/*.jar /function/app/
 
-CMD ["KmsDemoFunction::handleRequest"]
+CMD ["codes.recursive.KmsDemoFunction::handleRequest"]
 ----
 
 [NOTE]
