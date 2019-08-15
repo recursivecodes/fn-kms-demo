@@ -6,7 +6,7 @@ ifdef::env-github[]
 :warning-caption: :warning:
 endif::[]
 
-= ords demo jdbc
+= Using OCI KMS to Encrypt/Decrypt Sensitive Values For Use As Config Variables With Oracle Functions
 
 :toc:
 :toc-placement!:
