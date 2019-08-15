@@ -1,0 +1,297 @@
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+= ords demo jdbc
+
+:toc:
+:toc-placement!:
+
+toc::[]
+
+## About
+
+This project shows how to utilize OCI KMS to encrypt/decrypt config variables used with Oracle Functions.
+
+## Process Overview
+
+Here's an overview of the steps we'll need to take in order to encrypt and decrypt `sensitive values` for use with Oracle Functions:
+
+* Create a KMS vault
+* Create a Master Encryption Key
+* Generate a Data Encryption Key (DEK) from the Master Encryption Key
+* Use the DEK `plaintext` return value to encrypt the `sensitive value` (offline)
+* Store the encrypted `sensitive value` as a config variable in the serverless application
+* Store the DEK `ciphertext` and the `initVector` used to encrypt the `sensitive value` as Function config variables
+* Within the function, decrypt the DEK `ciphertext` back into `plaintext` using the OCID and Cryptographic Endpoint by invoking the OCI KMS SDK
+* Decrypt the `sensitive value` using the decrypted DEK `plaintext` and the `initVector`
+
+Detailed instructions are included below.
+
+## Prerequisites
+
+We're going to utilize resource principals within our Oracle Function. This means that we don't have to include OCI configuration files to use the link:https://docs.cloud.oracle.com/iaas/Content/API/Concepts/sdks.htm[OCI SDK], but does require that we have created a dynamic group within the tenancy which has the proper policies to allow us to interact with the KMS API.
+
+First, create a 'Dynamic Group' and set the 'rules' similarly to this (use the OCID of the compartment where you are deploying your functions):
+
+image::https://objectstorage.us-phoenix-1.oraclecloud.com/n/toddrsharp/b/readme-assets/o/2019-08-15_15-51-36.jpg[]
+
+link:https://docs.cloud.oracle.com/iaas/Content/Functions/Tasks/functionsaccessingociresources.htm[Read about using Resource Principals with Oracle Functions].
+
+Next, create a policy that gives access as necessary to the newly created dynamic group. View the link:https://docs.cloud.oracle.com/iaas/Content/Identity/Concepts/commonpolicies.htm#sec-admins-manage-vaults-keys[required policies for KMS].
+
+## Dependencies
+
+Add OCI Key Management SDK to `pom.xml`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.oracle.oci.sdk</groupId>
+    <artifactId>oci-java-sdk-keymanagement</artifactId>
+    <version>1.6.0</version>
+</dependency>
+----
+
+If you're using Java 11, manually include the `javax.activation-api`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>javax.activation</groupId>
+    <artifactId>javax.activation-api</artifactId>
+    <version>1.2.0</version>
+</dependency>
+----
+
+## Dockerfile
+
+Create a `Dockerfile` that will skip running the tests during the Docker build (since environment variables will not be available in the Docker context at build time):
+
+.Dockerfile
+[source,bash]
+----
+FROM fnproject/fn-java-fdk-build:jdk11-1.0.98 as build-stage
+WORKDIR /function
+ENV MAVEN_OPTS -Dhttp.proxyHost= -Dhttp.proxyPort= -Dhttps.proxyHost= -Dhttps.proxyPort= -Dhttp.nonProxyHosts= -Dmaven.repo.local=/usr/share/maven/ref/repository
+
+ADD pom.xml /function/pom.xml
+RUN ["mvn", "package", "dependency:copy-dependencies", "-DincludeScope=runtime", "-DskipTests=true", "-Dmdep.prependGroupId=true", "-DoutputDirectory=target", "--fail-never"]
+
+ADD src /function/src
+
+RUN ["mvn", "package", "-DskipTests=true"]
+FROM fnproject/fn-java-fdk:jre11-1.0.98
+WORKDIR /function
+COPY --from=build-stage /function/target/*.jar /function/app/
+
+CMD ["KmsDemoFunction::handleRequest"]
+----
+
+[NOTE]
+====
+You will need to manually run your tests prior to deploying.
+====
+
+## Serverless Application
+
+Create a serverless application:
+
+[source,bash]
+----
+fn create app --annotation oracle.com/oci/subnetIds='["ocid1.subnet.oc1.phx..."]' fn-kms
+----
+
+## Serverless Function
+
+Create a function:
+
+[source,bash]
+----
+fn init --runtime java fn-kms-demo
+----
+
+## Encryption
+
+We're going to use link:https://docs.cloud.oracle.com/iaas/Content/KeyManagement/Concepts/keyoverview.htm[OCI KMS] to encrypt our DB password.
+
+### Create Vault And Master Encryption Key
+
+In the OCI console sidebar, under 'Governance and Administration', select 'Security' -> 'Key Management':
+
+image::https://objectstorage.us-phoenix-1.oraclecloud.com/n/toddrsharp/b/readme-assets/o/2019-08-14_16-00-26.jpg[]
+
+Click on 'Create Vault' and enter the vault details:
+
+image::https://objectstorage.us-phoenix-1.oraclecloud.com/n/toddrsharp/b/readme-assets/o/2019-08-14_15-43-50.jpg[]
+
+When the vault is created, click on the vault name to view the vault details. Within the vault details, click on 'Create Key' to create a new master encryption key and populate the dialog:
+
+image::https://objectstorage.us-phoenix-1.oraclecloud.com/n/toddrsharp/b/readme-assets/o/2019-08-14_15-59-54.jpg[]
+
+Copy the OCID of the Master Encryption Key and the 'Cryptographic Endpoint' from the vault. We'll use this to create a Data Encryption Key (DEK) for our DB password.
+
+### Create Data Encryption Key (DEK)
+
+Create the Data Encryption Key (DEK) via the OCI CLI like so:
+
+[source,bash]
+----
+oci kms crypto generate-data-encryption-key \
+--key-id ocid1.key.oc1.phx.... \
+--include-plaintext-key true \
+--key-shape "{\"algorithm\": \"AES\", \"length\": 16}" \
+--endpoint [Cryptographic Endpoint]
+----
+
+Keep the `ciphertext` and `plaintext` values returned from the `generate-data-encryption-key` call handy, we'll need them in a minute.
+
+Example DEK `ciphertext`:
+
+`I...AAAAAA==`
+
+Store the ciphertext as a config var with the application:
+
+[source,bash]
+----
+fn config app fn-kms DEK_CIPHERTEXT I...AAAAAA==
+----
+
+Example DEK `plaintext`:
+
+`0...=`
+
+### Encrypt Password
+
+*Note:* In this step we're encrypting the password offline, outside of the function. Our function will decrypt the value when it's running.
+
+Encrypt the password using the DEK. Here's a sample that you could potentially use.
+
+*Note:* Plug in your DEK `plaintext` value and choose a random 16 byte string for the `initVector`. We'll store the `initVector` as a config var so we can use it when decrypting later on.
+
+[source,java]
+----
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.SecureRandom;
+import java.util.Base64;
+
+
+class Main {
+    private static String key = "0...=="; //DEK plaintext value
+    private static String initVector = "abcdefghijklmnop"; //must be 16 bytes
+
+    public static void main(String[] args) {
+        System.out.println(encrypt("hunter2"));
+    }
+
+    public static String encrypt(String value) {
+        try {
+            IvParameterSpec iv = new IvParameterSpec(initVector.getBytes("UTF-8"));
+            SecretKeySpec skeySpec = new SecretKeySpec(key.getBytes("UTF-8"), "AES");
+
+            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5PADDING");
+            cipher.init(Cipher.ENCRYPT_MODE, skeySpec, iv);
+
+            byte[] encrypted = cipher.doFinal(value.getBytes());
+            return Base64.getEncoder().encodeToString(encrypted);
+        }
+        catch (Exception ex) {
+            ex.printStackTrace();
+        }
+        return null;
+    }
+}
+----
+
+Store the random 16 byte `initVector` string as a config var with the application:
+
+[source,bash]
+----
+fn config app fn-kms INIT_VECTOR_STRING [Random 16 byte string]
+----
+
+Copy the output of the above program. This is our encrypted password. Set this as a config var in the application:
+
+[source,bash]
+----
+fn config app fn-kms ENCRYPTED_PASSWORD N...==
+----
+
+Finally, set the Master Encryption Key OCID and the Cryptographic Endpoint as config vars for the application:
+
+[source,bash]
+----
+fn config app fn-kms KEY_OCID ocid1.key.oc1.phx...
+fn config app fn-kms ENDPOINT https://...-crypto.kms.us-phoenix-1.oraclecloud.com
+----
+
+## Serverless Function
+
+We can now modify our serverless function to decrypt the encrypted password. See `HelloFunction.java` for example.
+
+## Testing
+
+[TIP]
+====
+Before you can test this function locally, you'll seed to set some environment variables. See `env.sh` in the root of this project for the variables that need to be set. All of these values are obtained by following the steps above (note they all match up to the config vars you have already set for the application).
+====
+
+After setting the necessary environment variables, write a unit test:
+
+.HelloFunctionTest.java
+[source,java]
+----
+public class HelloFunctionTest {
+
+    @Rule
+    public final FnTestingRule testing = FnTestingRule.createDefault();
+
+    @Test
+    public void shouldDecryptPassword() throws IOException {
+        testing.givenEvent().enqueue();
+        testing.thenRun(HelloFunction.class, "handleRequest");
+
+        FnResult result = testing.getOnlyResult();
+        System.out.println(result.getBodyAsString());
+        Map<String, String> resultMap = new ObjectMapper().readValue(result.getBodyAsString(), Map.class);
+        assertEquals("hunter2", resultMap.get("decryptedPassword"));
+    }
+
+}
+----
+
+### Deploying
+
+To deploy:
+
+[source,bash]
+----
+fn deploy --app fn-kms
+----
+
+To invoke:
+
+[source,bash]
+----
+fn invoke fn-kms fn-kms-demo
+----
+
+Which will return the decrypted password:
+
+[WARNING]
+====
+Clearly, you'd never return a decrypted password like this, right??
+====
+
+[source,json]
+----
+{"decryptedPassword":"hunter2"}
+----
