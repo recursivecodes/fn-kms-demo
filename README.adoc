@@ -44,6 +44,25 @@ link:https://docs.cloud.oracle.com/iaas/Content/Functions/Tasks/functionsaccessi
 
 Next, create a policy that gives access as necessary to the newly created dynamic group. View the link:https://docs.cloud.oracle.com/iaas/Content/Identity/Concepts/commonpolicies.htm#sec-admins-manage-vaults-keys[required policies for KMS].
 
+
+## Serverless Application
+
+Create a serverless application:
+
+[source,bash]
+----
+fn create app --annotation oracle.com/oci/subnetIds='["ocid1.subnet.oc1.phx..."]' fn-kms
+----
+
+## Serverless Function
+
+Create a function:
+
+[source,bash]
+----
+fn init --runtime java fn-kms-demo
+----
+
 ## Dependencies
 
 Add OCI Key Management SDK to `pom.xml`:
@@ -96,24 +115,6 @@ CMD ["KmsDemoFunction::handleRequest"]
 ====
 You will need to manually run your tests prior to deploying.
 ====
-
-## Serverless Application
-
-Create a serverless application:
-
-[source,bash]
-----
-fn create app --annotation oracle.com/oci/subnetIds='["ocid1.subnet.oc1.phx..."]' fn-kms
-----
-
-## Serverless Function
-
-Create a function:
-
-[source,bash]
-----
-fn init --runtime java fn-kms-demo
-----
 
 ## Encryption
 
