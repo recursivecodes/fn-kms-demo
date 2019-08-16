@@ -236,7 +236,7 @@ fn config app fn-kms ENDPOINT https://...-crypto.kms.us-phoenix-1.oraclecloud.co
 
 ## Serverless Function
 
-We can now modify our serverless function to decrypt the encrypted password. See `HelloFunction.java` for example.
+We can now modify our serverless function to decrypt the encrypted password. See link:https://github.com/recursivecodes/fn-kms-demo/blob/master/src/main/java/codes/recursive/KmsDemoFunction.java[`KmsDemoFunction.java`] for example.
 
 ## Testing
 
